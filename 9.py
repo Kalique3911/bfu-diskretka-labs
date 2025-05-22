@@ -1,139 +1,146 @@
-import networkx as nx
-import matplotlib.pyplot as plt
 from collections import deque
 
-class BipartiteGraphAnalyzer:
+class BipartiteGraph:
     def __init__(self, edges):
         self.edges = edges
-        self.graph = nx.Graph()
-        self.graph.add_edges_from(edges)
-        self.left = []
-        self.right = []
-        self.is_bipartite = False
+        self.nodes = set()
+        for u, v in edges:
+            self.nodes.update({u, v})
+        self.adj = {}
+        for node in self.nodes:
+            self.adj[node] = []
+        for u, v in edges:
+            self.adj[u].append(v)
+            self.adj[v].append(u)
         
-    def check_bipartite(self):
-        try:
-            # Проверяем двудольность и получаем раскраску
-            color = nx.bipartite.color(self.graph)
-            self.is_bipartite = True
-            
-            # Разделяем вершины на две доли
-            self.left = [node for node in color if color[node] == 0]
-            self.right = [node for node in color if color[node] == 1]
-            
-            return True, None
-        except nx.NetworkXError:
-            return False, "Граф не является двудольным"
+        # Разделение на доли (предполагаем, что граф двудольный)
+        self.left = set()
+        self.right = set()
+        self._bipartition()
+
+    def _bipartition(self):
+        """Разделение вершин на две доли (BFS-раскраска)"""
+        if not self.nodes:
+            return
+        
+        color = {}
+        start_node = next(iter(self.nodes))
+        queue = deque([start_node])
+        color[start_node] = 0
+        self.left.add(start_node)
+        
+        while queue:
+            u = queue.popleft()
+            for v in self.adj[u]:
+                if v not in color:
+                    color[v] = 1 - color[u]
+                    if color[v] == 0:
+                        self.left.add(v)
+                    else:
+                        self.right.add(v)
+                    queue.append(v)
 
 class FordFulkerson:
-    def __init__(self, graph, left, right):
+    def __init__(self, graph):
         self.graph = graph
-        self.left = left
-        self.right = right
-        self.flow_network = nx.DiGraph()
-        self.source = 's'
-        self.sink = 't'
+        self.flow = {}
         
-    def build_flow_network(self):
-        # Добавляем вершины источника и стока
-        self.flow_network.add_node(self.source)
-        self.flow_network.add_node(self.sink)
+    def bfs(self, s, t, parent):
+        visited = set()
+        queue = deque()
+        queue.append(s)
+        visited.add(s)
         
-        # Добавляем ребра из источника в левую долю
-        for node in self.left:
-            self.flow_network.add_edge(self.source, node, capacity=1)
-        
-        # Добавляем ребра из правой доли в сток
-        for node in self.right:
-            self.flow_network.add_edge(node, self.sink, capacity=1)
-        
-        # Добавляем исходные ребра графа (направленные слева направо)
-        for u, v in self.graph.edges():
-            if u in self.left and v in self.right:
-                self.flow_network.add_edge(u, v, capacity=1)
-            elif v in self.left and u in self.right:
-                self.flow_network.add_edge(v, u, capacity=1)
+        while queue:
+            u = queue.popleft()
+            for v in self.graph.adj[u]:
+                if v not in visited and (u, v) not in self.flow or self.flow[(u, v)] > 0:
+                    queue.append(v)
+                    visited.add(v)
+                    parent[v] = u
+                    if v == t:
+                        return True
+        return False
     
-    def find_max_matching(self):
-        self.build_flow_network()
+    def max_matching(self):
+        # Добавляем источник и сток
+        s = 'source'
+        t = 'sink'
+        self.graph.adj[s] = list(self.graph.left)
+        self.graph.adj[t] = []
+        for node in self.graph.right:
+            self.graph.adj[node].append(t)
         
-        # Вычисляем максимальный поток
-        flow_value, flow_dict = nx.maximum_flow(self.flow_network, self.source, self.sink)
+        # Инициализация потока
+        for u, v in self.graph.edges:
+            self.flow[(u, v)] = 0
+            self.flow[(v, u)] = 0
+        for u in self.graph.left:
+            self.flow[(s, u)] = 0
+            self.flow[(u, s)] = 0
+        for v in self.graph.right:
+            self.flow[(v, t)] = 0
+            self.flow[(t, v)] = 0
         
-        # Извлекаем паросочетание из потока
+        parent = {}
+        max_flow = 0
+        
+        while self.bfs(s, t, parent):
+            path_flow = float('Inf')
+            v = t
+            while v != s:
+                u = parent[v]
+                if (u, v) in self.flow:
+                    path_flow = min(path_flow, self.flow[(u, v)])
+                else:
+                    path_flow = min(path_flow, 1)  # Все пропускные способности 1
+                v = u
+            
+            v = t
+            while v != s:
+                u = parent[v]
+                if (u, v) in self.flow:
+                    self.flow[(u, v)] -= path_flow
+                    self.flow[(v, u)] += path_flow
+                v = u
+            
+            max_flow += path_flow
+        
+        # Восстанавливаем паросочетание
         matching = []
-        for u in flow_dict:
-            if u == self.source or u == self.sink:
-                continue
-            for v in flow_dict[u]:
-                if v != self.source and v != self.sink and flow_dict[u][v] == 1:
+        for u in self.graph.left:
+            for v in self.graph.adj[u]:
+                if v != t and self.flow[(v, u)] == 1:
                     matching.append((u, v))
+                    break
         
         return matching
 
 class KuhnAlgorithm:
-    def __init__(self, graph, left, right):
+    def __init__(self, graph):
         self.graph = graph
-        self.left = left
-        self.right = right
-        self.match_to = {node: None for node in right}
+        self.match_to = {v: None for v in self.graph.right}
     
     def bpm(self, u, visited):
-        for v in self.graph.neighbors(u):
-            if v in self.right and v not in visited:
+        for v in self.graph.adj[u]:
+            if v in self.graph.right and v not in visited:
                 visited.add(v)
                 if self.match_to[v] is None or self.bpm(self.match_to[v], visited):
                     self.match_to[v] = u
                     return True
         return False
     
-    def find_max_matching(self):
-        for u in self.left:
+    def max_matching(self):
+        for u in self.graph.left:
             self.bpm(u, set())
-        
-        # Формируем список пар
-        matching = [(self.match_to[v], v) for v in self.right if self.match_to[v] is not None]
-        return matching
+        return [(self.match_to[v], v) for v in self.graph.right if self.match_to[v] is not None]
 
-class GraphVisualizer:
-    @staticmethod
-    def visualize(graph, left, right, matching, title):
-        plt.figure(figsize=(12, 8))
-        pos = {}
-        
-        # Располагаем вершины в две колонки
-        left_x = 0
-        right_x = 2
-        left_y = sorted(left, reverse=True)
-        right_y = sorted(right, reverse=True)
-        
-        for i, node in enumerate(left_y):
-            pos[node] = (left_x, i)
-        
-        for i, node in enumerate(right_y):
-            pos[node] = (right_x, i)
-        
-        # Рисуем вершины разными цветами для долей
-        nx.draw_networkx_nodes(graph, pos, nodelist=left, node_color='lightblue', node_size=700)
-        nx.draw_networkx_nodes(graph, pos, nodelist=right, node_color='lightgreen', node_size=700)
-        
-        # Рисуем все ребра серым
-        nx.draw_networkx_edges(graph, pos, edge_color='gray', width=1, alpha=0.5)
-        
-        # Рисуем ребра паросочетания красным
-        nx.draw_networkx_edges(graph, pos, edgelist=matching, edge_color='red', width=3)
-        
-        # Подписываем вершины
-        nx.draw_networkx_labels(graph, pos, font_size=12, font_weight='bold')
-        
-        plt.title(title, fontsize=14, pad=20)
-        plt.axis('off')
-        plt.tight_layout()
-        plt.show()
+def print_matching(matching):
+    print("Максимальное паросочетание (размер = {}):".format(len(matching)))
+    for pair in matching:
+        print("{} - {}".format(pair[0], pair[1]))
 
-# Основная программа
 if __name__ == "__main__":
-    # Исходные данные
     edges = [
         (7, 13), (2, 11), (2, 5), (14, 15), (12, 14), (6, 13),
         (3, 15), (7, 16), (4, 9), (3, 7), (6, 8), (3, 6), (9, 14),
@@ -143,37 +150,17 @@ if __name__ == "__main__":
         (9, 13), (6, 14), (3, 5)
     ]
     
-    # 1. Проверка двудольности
-    analyzer = BipartiteGraphAnalyzer(edges)
-    is_bipartite, message = analyzer.check_bipartite()
+    print("Строим двудольный граф...")
+    graph = BipartiteGraph(edges)
+    print("Левая доля:", graph.left)
+    print("Правая доля:", graph.right)
     
-    if not is_bipartite:
-        print(message)
-        exit()
-    
-    print("Граф является двудольным")
-    print(f"Левая доля: {analyzer.left}")
-    print(f"Правая доля: {analyzer.right}")
-    
-    # 2. Поиск паросочетания алгоритмом Форда-Фалкерсона
     print("\n--- Алгоритм Форда-Фалкерсона ---")
-    ff = FordFulkerson(analyzer.graph, analyzer.left, analyzer.right)
-    ff_matching = ff.find_max_matching()
-    print(f"Максимальное паросочетание: {ff_matching}")
-    print(f"Размер паросочетания: {len(ff_matching)}")
+    ff = FordFulkerson(graph)
+    ff_matching = ff.max_matching()
+    print_matching(ff_matching)
     
-    # 3. Поиск паросочетания алгоритмом Куна
     print("\n--- Алгоритм Куна ---")
-    kuhn = KuhnAlgorithm(analyzer.graph, analyzer.left, analyzer.right)
-    kuhn_matching = kuhn.find_max_matching()
-    print(f"Максимальное паросочетание: {kuhn_matching}")
-    print(f"Размер паросочетания: {len(kuhn_matching)}")
-    
-    # 4. Визуализация
-    print("\nВизуализация результатов...")
-    GraphVisualizer.visualize(analyzer.graph, analyzer.left, analyzer.right, [], 
-                            "Исходный двудольный граф")
-    GraphVisualizer.visualize(analyzer.graph, analyzer.left, analyzer.right, ff_matching, 
-                            f"Максимальное паросочетание (Форд-Фалкерсон)\nРазмер: {len(ff_matching)}")
-    GraphVisualizer.visualize(analyzer.graph, analyzer.left, analyzer.right, kuhn_matching, 
-                            f"Максимальное паросочетание (Алгоритм Куна)\nРазмер: {len(kuhn_matching)}")
+    kuhn = KuhnAlgorithm(graph)
+    kuhn_matching = kuhn.max_matching()
+    print_matching(kuhn_matching)
